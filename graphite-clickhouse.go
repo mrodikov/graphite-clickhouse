@@ -7,11 +7,16 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	"runtime/debug"
 	"time"
 
+	"github.com/lomik/zapwriter"
+	"go.uber.org/zap"
+
 	"github.com/lomik/graphite-clickhouse/autocomplete"
+	"github.com/lomik/graphite-clickhouse/capabilities"
 	"github.com/lomik/graphite-clickhouse/config"
 	"github.com/lomik/graphite-clickhouse/find"
 	"github.com/lomik/graphite-clickhouse/index"
@@ -19,14 +24,10 @@ import (
 	"github.com/lomik/graphite-clickhouse/prometheus"
 	"github.com/lomik/graphite-clickhouse/render"
 	"github.com/lomik/graphite-clickhouse/tagger"
-	"github.com/lomik/zapwriter"
-	"go.uber.org/zap"
-
-	_ "net/http/pprof"
 )
 
 // Version of graphite-clickhouse
-const Version = "0.11.7"
+const Version = "0.12.0"
 
 func init() {
 	scope.Version = Version
@@ -62,11 +63,13 @@ func Handler(handler http.Handler) http.Handler {
 
 		r = scope.HttpRequest(r)
 
+		w.Header().Add("X-Gch-Request-ID", scope.RequestID(r.Context()))
+
 		start := time.Now()
 		handler.ServeHTTP(writer, r)
 		d := time.Since(start)
 
-		logger := scope.Logger(r.Context())
+		logger := scope.Logger(r.Context()).Named("http")
 
 		grafana := scope.Grafana(r.Context())
 		if grafana != "" {
@@ -94,7 +97,7 @@ func main() {
 	printDefaultConfig := flag.Bool("config-print-default", false, "Print default config")
 	checkConfig := flag.Bool("check-config", false, "Check config and exit")
 	buildTags := flag.Bool("tags", false, "Build tags table")
-	pprof := flag.String("pprof", "", "Additional pprof listen addr for non-server modes (tagger, etc..)")
+	pprof := flag.String("pprof", "", "Additional pprof listen addr for non-server modes (tagger, etc..), overrides pprof-listen from common ")
 
 	printVersion := flag.Bool("version", false, "Print version")
 
@@ -141,8 +144,12 @@ func main() {
 
 	/* CONFIG end */
 
-	if pprof != nil && *pprof != "" {
-		go func() { log.Fatal(http.ListenAndServe(*pprof, nil)) }()
+	if pprof != nil && *pprof != "" || cfg.Common.PprofListen != "" {
+		listen := cfg.Common.PprofListen
+		if *pprof != "" {
+			listen = *pprof
+		}
+		go func() { log.Fatal(http.ListenAndServe(listen, nil)) }()
 	}
 
 	/* CONSOLE COMMANDS start */
@@ -155,12 +162,14 @@ func main() {
 
 	/* CONSOLE COMMANDS end */
 
-	http.Handle("/metrics/find/", Handler(find.NewHandler(cfg)))
-	http.Handle("/metrics/index.json", Handler(index.NewHandler(cfg)))
-	http.Handle("/render/", Handler(render.NewHandler(cfg)))
-	http.Handle("/tags/autoComplete/tags", Handler(autocomplete.NewTags(cfg)))
-	http.Handle("/tags/autoComplete/values", Handler(autocomplete.NewValues(cfg)))
-	http.HandleFunc("/debug/config", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.Handle("/_internal/capabilities/", Handler(capabilities.NewHandler(cfg)))
+	mux.Handle("/metrics/find/", Handler(find.NewHandler(cfg)))
+	mux.Handle("/metrics/index.json", Handler(index.NewHandler(cfg)))
+	mux.Handle("/render/", Handler(render.NewHandler(cfg)))
+	mux.Handle("/tags/autoComplete/tags", Handler(autocomplete.NewTags(cfg)))
+	mux.Handle("/tags/autoComplete/values", Handler(autocomplete.NewValues(cfg)))
+	mux.HandleFunc("/debug/config", func(w http.ResponseWriter, r *http.Request) {
 		b, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -169,7 +178,7 @@ func main() {
 		w.Write(b)
 	})
 
-	http.Handle("/", Handler(prometheus.NewHandler(cfg)))
+	mux.Handle("/", Handler(prometheus.NewHandler(cfg)))
 
-	log.Fatal(http.ListenAndServe(cfg.Common.Listen, nil))
+	log.Fatal(http.ListenAndServe(cfg.Common.Listen, mux))
 }

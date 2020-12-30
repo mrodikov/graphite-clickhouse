@@ -39,6 +39,8 @@ func NewValues(config *config.Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	logger := scope.Logger(r.Context()).Named("autocomplete")
+	r = r.WithContext(scope.WithLogger(r.Context(), logger))
 	if h.isValues {
 		h.ServeValues(w, r)
 	} else {
@@ -128,8 +130,16 @@ func (h *Handler) ServeTags(w http.ResponseWriter, r *http.Request) {
 		queryLimit,
 	)
 
-	body, err := clickhouse.Query(scope.WithTable(r.Context(), h.config.ClickHouse.TaggedTable), h.config.ClickHouse.Url, sql,
-		clickhouse.Options{Timeout: h.config.ClickHouse.TreeTimeout.Value(), ConnectTimeout: h.config.ClickHouse.ConnectTimeout.Value()})
+	body, err := clickhouse.Query(
+		scope.WithTable(r.Context(), h.config.ClickHouse.TaggedTable),
+		h.config.ClickHouse.Url,
+		sql,
+		clickhouse.Options{
+			Timeout:        h.config.ClickHouse.TreeTimeout.Value(),
+			ConnectTimeout: h.config.ClickHouse.ConnectTimeout.Value(),
+		},
+		nil,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -226,8 +236,16 @@ func (h *Handler) ServeValues(w http.ResponseWriter, r *http.Request) {
 		limit,
 	)
 
-	body, err := clickhouse.Query(scope.WithTable(r.Context(), h.config.ClickHouse.TaggedTable), h.config.ClickHouse.Url, sql,
-		clickhouse.Options{Timeout: h.config.ClickHouse.IndexTimeout.Value(), ConnectTimeout: h.config.ClickHouse.ConnectTimeout.Value()})
+	body, err := clickhouse.Query(
+		scope.WithTable(r.Context(), h.config.ClickHouse.TaggedTable),
+		h.config.ClickHouse.Url,
+		sql,
+		clickhouse.Options{
+			Timeout:        h.config.ClickHouse.IndexTimeout.Value(),
+			ConnectTimeout: h.config.ClickHouse.ConnectTimeout.Value(),
+		},
+		nil,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

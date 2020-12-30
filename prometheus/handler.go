@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/prometheus/web"
 
 	"github.com/lomik/graphite-clickhouse/config"
+	"github.com/lomik/graphite-clickhouse/pkg/scope"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/common/server"
@@ -72,6 +73,8 @@ func NewHandler(config *config.Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	logger := scope.Logger(r.Context()).Named("prometheus")
+	r = r.WithContext(scope.WithLogger(r.Context(), logger))
 	if strings.HasSuffix(r.URL.Path, "/read") {
 		h.read(w, r)
 		return

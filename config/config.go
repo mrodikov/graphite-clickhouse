@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,13 +42,44 @@ func (d *Duration) Value() time.Duration {
 	return d.Duration
 }
 
+// FileMode wrapper os.FileMode for TOML
+type FileMode struct {
+	os.FileMode
+}
+
+var _ toml.TextMarshaler = &FileMode{}
+
+// UnmarshalText from TOML
+func (f *FileMode) UnmarshalText(text []byte) error {
+	var err error
+	var mode uint64
+	mode, err = strconv.ParseUint(string(text), 8, 32)
+	if err != nil {
+		return err
+	}
+	f.FileMode = os.FileMode(mode)
+	return nil
+}
+
+// MarshalText encode text with TOML format
+func (f *FileMode) MarshalText() ([]byte, error) {
+	return []byte(fmt.Sprintf("0%o", f.FileMode)), nil
+}
+
+// Value return time.Duration value
+func (f *FileMode) Value() os.FileMode {
+	return f.FileMode
+}
+
 type Common struct {
-	Listen string `toml:"listen" json:"listen"`
 	// MetricPrefix   string    `toml:"metric-prefix"`
 	// MetricInterval *Duration `toml:"metric-interval"`
 	// MetricEndpoint string    `toml:"metric-endpoint"`
+	Listen                 string           `toml:"listen" json:"listen"`
+	PprofListen            string           `toml:"pprof-listen" json:"pprof-listen"`
 	MaxCPU                 int              `toml:"max-cpu" json:"max-cpu"`
 	MaxMetricsInFindAnswer int              `toml:"max-metrics-in-find-answer" json:"max-metrics-in-find-answer"` //zero means infinite
+	MaxMetricsPerTarget    int              `toml:"max-metrics-per-target" json:"max-metrics-per-target"`
 	TargetBlacklist        []string         `toml:"target-blacklist" json:"target-blacklist"`
 	Blacklist              []*regexp.Regexp `toml:"-" json:"-"` // compiled TargetBlacklist
 	MemoryReturnInterval   *Duration        `toml:"memory-return-interval" json:"memory-return-interval"`
@@ -71,6 +103,10 @@ type ClickHouse struct {
 	ConnectTimeout       *Duration `toml:"connect-timeout" json:"connect-timeout"`
 	DataTableLegacy      string    `toml:"data-table" json:"data-table"`
 	RollupConfLegacy     string    `toml:"rollup-conf" json:"-"`
+	// Sets the maximum for maxDataPoints parameter.
+	MaxDataPoints int `toml:"max-data-points" json:"max-data-points"`
+	// InternalAggregation controls if ClickHouse itself or graphite-clickhouse aggregates points to proper retention
+	InternalAggregation bool `toml:"internal-aggregation" json:"internal-aggregation"`
 }
 
 type Tags struct {
@@ -124,6 +160,16 @@ type DataTable struct {
 	Rollup                 *rollup.Rollup  `toml:"-" json:"rollup-conf"`
 }
 
+// Debug contains debugging configuration
+type Debug struct {
+	// The directory for additional debug info
+	Directory     string    `toml:"directory" json:"directory"`
+	DirectoryPerm *FileMode `toml:"directory-perm" json:"directory-perm"`
+	// If ExternalDataPerm > 0 and X-Gch-Debug-Ext-Data HTTP header is set, the external data used in the query
+	// will be saved in the DebugDir directory
+	ExternalDataPerm *FileMode `toml:"external-data-perm" json:"external-data-perm"`
+}
+
 // Config ...
 type Config struct {
 	Common     Common             `toml:"common" json:"common"`
@@ -132,6 +178,7 @@ type Config struct {
 	Tags       Tags               `toml:"tags" json:"tags"`
 	Carbonlink Carbonlink         `toml:"carbonlink" json:"carbonlink"`
 	Prometheus Prometheus         `toml:"prometheus" json:"prometheus"`
+	Debug      Debug              `toml:"debug" json:"debug"`
 	Logging    []zapwriter.Config `toml:"logging" json:"logging"`
 }
 
@@ -139,7 +186,8 @@ type Config struct {
 func New() *Config {
 	cfg := &Config{
 		Common: Common{
-			Listen: ":9090",
+			Listen:      ":9090",
+			PprofListen: "",
 			// MetricPrefix: "carbon.graphite-clickhouse.{host}",
 			// MetricInterval: &Duration{
 			// 	Duration: time.Minute,
@@ -147,6 +195,7 @@ func New() *Config {
 			// MetricEndpoint: MetricEndpointLocal,
 			MaxCPU:                 1,
 			MaxMetricsInFindAnswer: 0,
+			MaxMetricsPerTarget:    15000, // This is arbitrary value to protect CH from overload
 			MemoryReturnInterval:   &Duration{},
 		},
 		ClickHouse: ClickHouse{
@@ -168,6 +217,8 @@ func New() *Config {
 			TagTable:             "",
 			TaggedAutocompleDays: 7,
 			ConnectTimeout:       &Duration{Duration: time.Second},
+			MaxDataPoints:        4096, // Default until https://github.com/ClickHouse/ClickHouse/pull/13947
+			InternalAggregation:  false,
 		},
 		Tags: Tags{
 			Date:  "2016-11-01",
@@ -183,6 +234,11 @@ func New() *Config {
 		Prometheus: Prometheus{
 			ExternalURLRaw: "",
 			PageTitle:      "Prometheus Time Series Collection and Processing Server",
+		},
+		Debug: Debug{
+			Directory:        "",
+			DirectoryPerm:    &FileMode{FileMode: 0755},
+			ExternalDataPerm: &FileMode{FileMode: 0},
 		},
 		Logging: nil,
 	}
@@ -234,7 +290,7 @@ func ReadConfig(filename string) (*Config, error) {
 		body := string(b)
 
 		// @TODO: fix for config starts with [logging]
-		body = strings.Replace(body, "\n[logging]\n", "\n[[logging]]\n", -1)
+		body = strings.ReplaceAll(body, "\n[logging]\n", "\n[[logging]]\n")
 
 		if _, err := toml.Decode(body, cfg); err != nil {
 			return nil, err
@@ -251,6 +307,19 @@ func ReadConfig(filename string) (*Config, error) {
 
 	if err := zapwriter.CheckConfig(cfg.Logging, nil); err != nil {
 		return nil, err
+	}
+
+	// Check if debug directory exists or could be created
+	if cfg.Debug.Directory != "" {
+		info, err := os.Stat(cfg.Debug.Directory)
+		if os.IsNotExist(err) {
+			err := os.MkdirAll(cfg.Debug.Directory, os.ModeDir|cfg.Debug.DirectoryPerm.FileMode)
+			if err != nil {
+				return nil, err
+			}
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("the file for external data debug dumps exists and is not a directory: %v", cfg.Debug.Directory)
+		}
 	}
 
 	if cfg.ClickHouse.DataTableLegacy != "" {

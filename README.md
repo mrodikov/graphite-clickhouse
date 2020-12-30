@@ -20,7 +20,7 @@ Gray components are optional or alternative
 - [x] [carbonapi](https://github.com/go-graphite/carbonapi)
 
 ## Build
-Required golang 1.7+
+Required golang 1.13+
 ```sh
 # build binary
 git clone https://github.com/lomik/graphite-clickhouse.git
@@ -51,7 +51,7 @@ Create `/etc/graphite-clickhouse/rollup.xml` with same content as for ClickHouse
 </graphite_rollup>
 ```
 
-For complex clickhouse queries you might need to increase default query_max_size. To do that add following line to `/etc/clickhouse-server/users.xml` for the user you are using:
+For complex ClickHouse queries you might need to increase default query_max_size. To do that add following line to `/etc/clickhouse-server/users.xml` for the user you are using:
 ```xml
 <!-- Default is 262144 -->
 <max_query_size>10485760</max_query_size>
@@ -61,14 +61,20 @@ Create `/etc/graphite-clickhouse/graphite-clickhouse.conf`
 ```toml
 [common]
 listen = ":9090"
+# Listener to serve /debug/pprof requests. `-pprof` argument would override it
+pprof-listen = ""
 max-cpu = 1
 # How frequently to call debug.FreeOSMemory() to return memory back to OS
 # Setting it to zero disables this functionality
 memory-return-interval = "0s"
 # Limit number of results from find query. Zero = unlimited
 max-metrics-in-find-answer = 0
+# Limit numbers of queried metrics per target in /render requests. Zero or negative are unlimited
+max-metrics-per-target = 15000
 # Daemon returns empty response if query matches any of regular expressions
 # target-blacklist = ["^not_found.*"]
+# If this > 0, then once an interval daemon will return the freed memory to the OS
+memory-return-interval = "0s"
 
 [clickhouse]
 # You can add user/password (http://user:password@localhost:8123) and any clickhouse options (GET-parameters) to url
@@ -92,8 +98,10 @@ index-timeout = "1m"
 
 # `tagged` table from carbon-clickhouse. Required for seriesByTag
 tagged-table = ""
+# For how long the daeom will query tags during autocomplete
+tagged-autocomplete-days = 7
 
-# Old index tables. Deprecated
+# Old index tables. DEPRECATED
 tree-table = "graphite_tree"
 # Optional table with daily series list.
 # Useful for installations with big count of short-lived series
@@ -104,6 +112,15 @@ date-tree-table = ""
 # 3: same as #2 but with reversed Path. Table type "series-reverse" in the carbon-clickhouse
 date-tree-table-version = 0
 tree-timeout = "1m0s"
+
+connect-timeout = "1s"
+
+# Sets the maximum for maxDataPoints parameter.
+# If you use CH w/o https://github.com/ClickHouse/ClickHouse/pull/13947, you have to set it to 4096
+max-data-points = 4096
+# Use metrics aggregation on ClickHouse site.
+# This feature is very useful, read https://github.com/lomik/graphite-clickhouse/wiki/ClickHouse-aggregation-VS-graphite%E2%80%94clickhouse-aggregation
+internal-aggregation = false
 
 [prometheus]
 # The URL under which Prometheus is externally reachable (for example, if Prometheus is served via a reverse proxy). Used for
@@ -160,6 +177,14 @@ total-timeout = "500ms"
 # # regexp.Match({target-match-all}, target[0]) && regexp.Match({target-match-all}, target[1]) && ...
 # target-match-all = "regexp"
 
+[debug]
+# The directory for debug info. If set, additional info may be saved there
+directory = "/var/log/graphite-clickhouse/debug"
+directory-perm = "0755"
+# File permissions for external data dumps. Enabled only if !=0, see X-Gch-Debug-External-Data header
+# Format is octal, e.g. 0640
+external-data-perm = "0644"
+
 [[logging]]
 logger = ""
 file = "/var/log/graphite-clickhouse/graphite-clickhouse.log"
@@ -168,6 +193,22 @@ encoding = "mixed"
 encoding-time = "iso8601"
 encoding-duration = "seconds"
 ```
+
+### Special headers processing
+
+Some HTTP headers are processed specially by the service
+
+#### Request headers
+
+*Grafana headers*: `X-Dashboard-Id`, `X-Grafana-Org-Id`, and `X-Panel-Id` are logged and passed further to the ClickHouse.
+
+*Debug headers*:
+
+- `X-Gch-Debug-External-Data` - when this header is set to anything and every of `directory`, `directory-perm`, and `external-data-perm` parameters in `[debug]` is set and valid, service will save the dump of external data tables in the directory for debug output.
+
+#### Response headers
+
+- `X-Gch-Request-Id` - the current request ID.
 
 ## Run on same host with old graphite-web 0.9.x
 By default graphite-web won't connect to CLUSTER_SERVER on localhost. Cheat:

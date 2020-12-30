@@ -14,12 +14,13 @@ func unsafeString(b []byte) string {
 
 func GlobToRegexp(g string) string {
 	s := g
-	s = strings.Replace(s, ".", "[.]", -1)
-	s = strings.Replace(s, "{", "(", -1)
-	s = strings.Replace(s, "}", ")", -1)
-	s = strings.Replace(s, "?", "[^.]", -1)
-	s = strings.Replace(s, ",", "|", -1)
-	s = strings.Replace(s, "*", "([^.]*?)", -1)
+	s = strings.ReplaceAll(s, ".", "[.]")
+	s = strings.ReplaceAll(s, "$", "[$]")
+	s = strings.ReplaceAll(s, "{", "(")
+	s = strings.ReplaceAll(s, "}", ")")
+	s = strings.ReplaceAll(s, "?", "[^.]")
+	s = strings.ReplaceAll(s, ",", "|")
+	s = strings.ReplaceAll(s, "*", "([^.]*?)")
 	return s
 }
 
@@ -38,16 +39,16 @@ func NonRegexpPrefix(expr string) string {
 }
 
 func escape(s string) string {
-	s = strings.Replace(s, `\`, `\\`, -1)
-	s = strings.Replace(s, `'`, `\'`, -1)
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
 	return s
 }
 
 func likeEscape(s string) string {
-	s = strings.Replace(s, `_`, `\_`, -1)
-	s = strings.Replace(s, `%`, `\%`, -1)
-	s = strings.Replace(s, `\`, `\\`, -1)
-	s = strings.Replace(s, `'`, `\'`, -1)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
 	return s
 }
 
@@ -98,6 +99,10 @@ func In(field string, list []string) string {
 	}
 	buf.WriteByte(')')
 	return buf.String()
+}
+
+func InTable(field string, table string) string {
+	return fmt.Sprintf("%s in %s", field, table)
 }
 
 func DateBetween(field string, from time.Time, until time.Time) string {
